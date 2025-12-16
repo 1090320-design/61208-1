@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D 撞球遊戲</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 遊戲專用樣式 */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #1f2937; /* 沉穩的深灰色背景 */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .game-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            max-width: 900px;
+            width: 100%;
+            background-color: #374151; /* 較淺的灰色容器 */
+            border-radius: 1rem;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+            padding: 1rem;
+        }
+
+        #gameCanvas {
+            border: 15px solid #8B4513; /* 木質邊框 */
+            background-color: #10B981; /* 撞球桌綠色絨布 */
+            border-radius: 10px;
+            cursor: none; /* 隱藏滑鼠游標 */
+        }
+
+        .controls {
+            margin-top: 1rem;
+            width: 100%;
+            padding: 0 1rem;
+        }
+
+        .status-bar {
+            background-color: #1f2937;
+            color: #E5E7EB;
+            padding: 0.75rem;
+            border-radius: 0.5rem;
+            margin-bottom: 1rem;
+            font-size: 1.125rem;
+            font-weight: 600;
+            text-align: center;
+        }
+
+        .input-group label {
+            color: #D1D5DB;
+        }
+        
+        /* 響應式調整 */
+        @media (max-width: 768px) {
+            .game-container {
+                padding: 0.5rem;
+            }
+            .status-bar {
+                font-size: 1rem;
+                padding: 0.5rem;
+            }
+            #gameCanvas {
+                border-width: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="game-container">
+    <h1 class="text-3xl font-bold text-white mb-4">2D 撞球</h1>
+    <div class="status-bar" id="statusBar">請瞄準母球 (白球) 並調整力度。</div>
+
+    <!-- 遊戲畫布 -->
+    <canvas id="gameCanvas"></canvas>
+
+    <div class="controls">
+        <div class="input-group flex items-center space-x-4">
+            <label for="powerSlider" class="text-lg">擊球力度:</label>
+            <input type="range" id="powerSlider" min="0.1" max="1.5" step="0.05" value="1.0" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg dark:bg-gray-700">
+            <span id="powerValue" class="text-white text-lg font-mono">1.0</span>
+        </div>
+        <!-- 新增重新開始按鈕 -->
+        <button id="restartButton" class="w-full mt-4 p-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg shadow-lg transition duration-150" style="display: none;">重新開始遊戲</button>
+        
+        <p class="text-sm text-gray-400 mt-2 text-center">點擊滑鼠左鍵擊球。當所有球停止時，才能擊球。</p>
+    </div>
+</div>
+
+<script>
+    // 獲取 Canvas 元素和 2D 渲染上下文
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const statusBar = document.getElementById('statusBar');
+    const powerSlider = document.getElementById('powerSlider');
+    const powerValueSpan = document.getElementById('powerValue');
+    const restartButton = document.getElementById('restartButton'); // 獲取新按鈕
+
+    // --- 遊戲常數設定 ---
+    const TABLE_WIDTH = 750;
+    const TABLE_HEIGHT = 450;
+    const BALL_RADIUS = 10;
+    const POCKET_RADIUS = 25;
+    const FRICTION = 0.99; // 摩擦力
+    const CUSHION_RESTITUTION = 0.85; // 邊緣反彈係數
+    const BALL_MASS = 1;
+
+    // 設定 Canvas 尺寸
+    canvas.width = TABLE_WIDTH;
+    canvas.height = TABLE_HEIGHT;
+
+    // --- 遊戲狀態變數 ---
+    let balls = [];
+    let isMouseDown = false;
+    let mouseX = 0;
+    let mouseY = 0;
+    let isAiming = false;
+    let isMoving = false; // 判斷球是否仍在移動
+    let cueBall = null; // 母球 (白球) 參考
+    let gameOver = false; // 新增遊戲結束狀態
+
+    // --- 球的定義 ---
+    class Ball {
+        constructor(x, y, color, number) {
+            this.x = x;
+            this.y = y;
+            this.vx = 0;
+            this.vy = 0;
+            this.color = color;
+            this.number = number;
+            this.radius = BALL_RADIUS;
+            this.inPocket = false;
+            this.mass = BALL_MASS;
+        }
+
+        // 繪製球
+        draw() {
+            if (this.inPocket) return;
+
+            // 繪製球體
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+            ctx.fillStyle = this.color;
+            ctx.fill();
+
+            // 繪製黑邊
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            // 繪製號碼 (僅供區分)
+            if (this.number !== 0) {
+                ctx.fillStyle = 'black';
+                ctx.font = 'bold 8px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(this.number, this.x, this.y);
+            }
+            ctx.closePath();
+        }
+
+        // 更新位置和速度 (應用摩擦力)
+        update() {
+            if (this.inPocket) return;
+
+            // 應用摩擦力
+            this.vx *= FRICTION;
+            this.vy *= FRICTION;
+
+            // 更新位置
+            this.x += this.vx;
+            this.y += this.vy;
+
+            // 如果速度極低，則停止
+            if (Math.hypot(this.vx, this.vy) < 0.05) {
+                this.vx = 0;
+                this.vy = 0;
+            }
+        }
+    }
+
+    // --- 遊戲初始化 ---
+    function initializeGame() {
+        balls = [];
+        
+        // 1. 母球 (白球)
+        // 初始位置設定在左側
+        cueBall = new Ball(TABLE_WIDTH * 0.25, TABLE_HEIGHT / 2, 'white', 0);
+        balls.push(cueBall);
+
+        // 2. 物件球 (三角排列)
+        const startX = TABLE_WIDTH * 0.75;
+        const startY = TABLE_HEIGHT / 2;
+        const gap = (BALL_RADIUS * 2) * 0.95; // 球之間略微重疊
+        let ballIndex = 1;
+
+        // 5 行，從 1 球開始
+        for (let row = 0; row < 5; row++) {
+            for (let col = 0; col <= row; col++) {
+                if (ballIndex > 15) break;
+
+                let color, number;
+                // 簡化顏色/號碼分配
+                if (ballIndex === 8) {
+                    color = 'black'; // 8號球
+                    number = 8;
+                } else if (ballIndex % 2 === 0) {
+                    color = 'blue'; // 假設為實色球
+                    number = ballIndex;
+                } else {
+                    color = 'red'; // 假設為花色球
+                    number = ballIndex;
+                }
+
+                const x = startX + row * Math.sqrt(3) * gap / 2;
+                const y = startY + col * gap - row * gap / 2;
+
+                balls.push(new Ball(x, y, color, number));
+                ballIndex++;
+            }
+        }
+    }
+
+    // --- 球袋 (Pocket) 定義 ---
+    // 頂部 (Top): 0, 1, 2
+    // 底部 (Bottom): 3, 4, 5
+    const pockets = [
+        { x: 0 + POCKET_RADIUS, y: 0 + POCKET_RADIUS }, // 左上
+        { x: TABLE_WIDTH / 2, y: 0 + POCKET_RADIUS }, // 中上
+        { x: TABLE_WIDTH - POCKET_RADIUS, y: 0 + POCKET_RADIUS }, // 右上
+        { x: 0 + POCKET_RADIUS, y: TABLE_HEIGHT - POCKET_RADIUS }, // 左下
+        { x: TABLE_WIDTH / 2, y: TABLE_HEIGHT - POCKET_RADIUS }, // 中下
+        { x: TABLE_WIDTH - POCKET_RADIUS, y: TABLE_HEIGHT - POCKET_RADIUS } // 右下
+    ];
+
+    // --- 物理更新 ---
+    function updatePhysics() {
+        let anyBallMoving = false;
+
+        // 1. 更新球的位置和速度 (應用摩擦力)
+        for (const ball of balls) {
+            if (ball.inPocket) continue;
+            ball.update();
+            if (Math.hypot(ball.vx, ball.vy) > 0) {
+                anyBallMoving = true;
+            }
+        }
+        isMoving = anyBallMoving;
+
+        // 2. 邊緣碰撞檢測
+        for (const ball of balls) {
+            if (ball.inPocket) continue;
+            
+            // 左右邊界
+            if (ball.x - ball.radius < 0) {
+                ball.x = ball.radius;
+                ball.vx *= -CUSHION_RESTITUTION;
+            } else if (ball.x + ball.radius > TABLE_WIDTH) {
+                ball.x = TABLE_WIDTH - ball.radius;
+                ball.vx *= -CUSHION_RESTITUTION;
+            }
+
+            // 上下邊界
+            if (ball.y - ball.radius < 0) {
+                ball.y = ball.radius;
+                ball.vy *= -CUSHION_RESTITUTION;
+            } else if (ball.y + ball.radius > TABLE_HEIGHT) {
+                ball.y = TABLE_HEIGHT - ball.radius;
+                ball.vy *= -CUSHION_RESTITUTION;
+            }
+        }
+
+        // 3. 球-球碰撞檢測 (簡化彈性碰撞)
+        for (let i = 0; i < balls.length; i++) {
+            const ballA = balls[i];
+            if (ballA.inPocket) continue;
+
+            for (let j = i + 1; j < balls.length; j++) {
+                const ballB = balls[j];
+                if (ballB.inPocket) continue;
+
+                const dx = ballA.x - ballB.x;
+                const dy = ballA.y - ballB.y;
+                const distance = Math.hypot(dx, dy);
+
+                if (distance < ballA.radius + ballB.radius) {
+                    // 發生碰撞
+                    
+                    // a. 將球分開以防止卡住
+                    const overlap = (ballA.radius + ballB.radius) - distance;
+                    const nx = dx / distance; // 法線單位向量 x
+                    const ny = dy / distance; // 法線單位向量 y
+
+                    // 僅輕微分離以確保物理計算正確
+                    ballA.x += nx * overlap * 0.505;
+                    ballA.y += ny * overlap * 0.505;
+                    ballB.x -= nx * overlap * 0.505;
+                    ballB.y -= ny * overlap * 0.505;
+
+                    // b. 簡化碰撞響應 (軸向速度交換)
+                    // 計算沿碰撞軸的速度分量
+                    const v1n = ballA.vx * nx + ballA.vy * ny;
+                    const v2n = ballB.vx * nx + ballB.vy * ny;
+
+                    // 計算切線速度分量 (不變)
+                    const v1t = ballA.vx * ny - ballA.vy * nx;
+                    const v2t = ballB.vx * ny - ballB.vy * nx;
+
+                    // 交換法線速度 (或使用彈性碰撞公式)
+                    const v1n_after = v2n; // 質量相同時簡單交換
+                    const v2n_after = v1n;
+
+                    // 將速度從法線/切線座標轉換回笛卡爾座標
+                    ballA.vx = v1n_after * nx + v1t * ny;
+                    ballA.vy = v1n_after * ny - v1t * nx;
+                    ballB.vx = v2n_after * nx - v2t * ny;
+                    ballB.vy = v2n_after * ny + v2t * nx;
+                }
+            }
+        }
+
+        // 4. 球袋檢測 (Pocketing)
+        for (const ball of balls) {
+            if (ball.inPocket) continue;
+
+            for (const pocket of pockets) {
+                const dx = ball.x - pocket.x;
+                const dy = ball.y - pocket.y;
+                const distance = Math.hypot(dx, dy);
+
+                // 如果球中心距離球袋足夠近
+                if (distance < POCKET_RADIUS * 0.8) {
+                    ball.inPocket = true;
+                    console.log(`球 ${ball.number === 0 ? '母球' : ball.number} 入袋!`);
+                    
+                    // 處理母球入袋 (犯規/重置)
+                    if (ball.number === 0) {
+                        setTimeout(() => {
+                            resetCueBall(); // 延遲重置，讓動畫感覺自然
+                            statusBar.textContent = "母球入袋！請將母球放置在發球線後 (左側)。";
+                        }, 500);
+                    }
+                    // 處理 8 號球入袋 (遊戲結束條件 - 簡化)
+                    else if (ball.number === 8) {
+                        checkGameOver();
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * 重置母球的位置和速度，並將其標記為未入袋。
+     */
+    function resetCueBall() {
+        cueBall.inPocket = false;
+        cueBall.x = TABLE_WIDTH * 0.25;
+        cueBall.y = TABLE_HEIGHT / 2;
+        cueBall.vx = 0;
+        cueBall.vy = 0;
+    }
+
+    /**
+     * 檢查遊戲是否因 8 號球入袋而結束。
+     * 如果所有其他物件球未入袋，則 8 號球入袋視為犯規。
+     */
+    function checkGameOver() {
+        const eightBall = balls.find(b => b.number === 8);
+        if (eightBall && eightBall.inPocket) {
+            
+            // 檢查除了母球和 8 號球之外，是否還有其他球未入袋
+            const remainingBalls = balls.filter(b => b.number !== 0 && b.number !== 8 && !b.inPocket);
+            let resultText = "";
+            
+            if (remainingBalls.length > 0) {
+                 // 8 號球過早入袋 (簡化為犯規)
+                resultText = "8 號球過早入袋！遊戲結束 (犯規)。";
+            } else {
+                // 所有物件球都已入袋，8 號球最後入袋 (簡化為勝利)
+                resultText = "恭喜！8 號球入袋，遊戲勝利！";
+            }
+
+            gameOver = true;
+            statusBar.textContent = resultText;
+            restartButton.style.display = 'block'; // 顯示重新開始按鈕
+            isAiming = false;
+        }
+    }
+
+    /**
+     * 重新開始遊戲，重置所有狀態和球的位置。
+     */
+    function restartGame() {
+        gameOver = false;
+        initializeGame(); // 重新排列所有球
+        restartButton.style.display = 'none';
+        statusBar.textContent = "請瞄準母球 (白球) 並調整力度。";
+    }
+
+    // --- 繪製函數 ---
+    function draw() {
+        // 清除畫布
+        ctx.clearRect(0, 0, TABLE_WIDTH, TABLE_HEIGHT);
+
+        // 1. 繪製球袋 (黑色圓形)
+        ctx.fillStyle = '#000000';
+        for (const pocket of pockets) {
+            ctx.beginPath();
+            ctx.arc(pocket.x, pocket.y, POCKET_RADIUS, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.closePath();
+        }
+
+        // 2. 繪製所有球
+        for (const ball of balls) {
+            ball.draw();
+        }
+
+        // 3. 繪製瞄準線 (如果可以擊球且正在瞄準)
+        if (!isMoving && !gameOver && cueBall && !cueBall.inPocket) { // 檢查 gameOver 狀態
+            // 從母球到滑鼠的向量
+            const dx = cueBall.x - mouseX;
+            const dy = cueBall.y - mouseY;
+            
+            // 繪製瞄準線 (方向與擊球方向相反)
+            ctx.beginPath();
+            ctx.setLineDash([5, 5]); // 虛線
+            ctx.strokeStyle = `rgba(255, 255, 255, ${parseFloat(powerSlider.value) / 1.5})`; // 透明度反映力度
+            ctx.lineWidth = 3;
+            ctx.moveTo(cueBall.x, cueBall.y);
+            
+            // 延長瞄準線，讓它看起來像球桿
+            const lineLength = Math.hypot(dx, dy) * 1.5; // 延長
+            const endX = cueBall.x + dx / Math.hypot(dx, dy) * lineLength;
+            const endY = cueBall.y + dy / Math.hypot(dx, dy) * lineLength;
+            
+            ctx.lineTo(endX, endY);
+            ctx.stroke();
+            ctx.setLineDash([]); // 恢復實線
+
+            // 繪製擊球方向預覽線 (紅色，短線)
+            ctx.beginPath();
+            ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+            ctx.lineWidth = 2;
+            ctx.moveTo(cueBall.x, cueBall.y);
+            const previewLength = parseFloat(powerSlider.value) * 50;
+            const previewX = cueBall.x - dx / Math.hypot(dx, dy) * previewLength;
+            const previewY = cueBall.y - dy / Math.hypot(dx, dy) * previewLength;
+            ctx.lineTo(previewX, previewY);
+            ctx.stroke();
+
+            statusBar.textContent = `瞄準中 - 力度: ${powerSlider.value}`;
+        } else if (!isMoving && !gameOver) {
+            statusBar.textContent = "請瞄準母球 (白球) 並調整力度。";
+        } else if (gameOver) {
+            // 遊戲結束時保持 checkGameOver 設定的文字
+        } else {
+            statusBar.textContent = "球正在移動中...";
+        }
+    }
+
+    // --- 遊戲主循環 ---
+    function gameLoop() {
+        updatePhysics();
+        draw();
+        requestAnimationFrame(gameLoop);
+    }
+
+    // --- 事件處理 ---
+
+    // 獲取滑鼠在 Canvas 上的座標
+    function getMousePos(event) {
+        const rect = canvas.getBoundingClientRect();
+        return {
+            x: event.clientX - rect.left,
+            y: event.clientY - rect.top
+        };
+    }
+
+    // 滑鼠移動時更新瞄準線
+    canvas.addEventListener('mousemove', (event) => {
+        const pos = getMousePos(event);
+        mouseX = pos.x;
+        mouseY = pos.y;
+        if (!isMoving && !gameOver) { // 檢查 gameOver 狀態
+            isAiming = true;
+        }
+    });
+
+    // 點擊滑鼠擊球
+    canvas.addEventListener('mousedown', (event) => {
+        // 阻止移動中、母球入袋、或遊戲結束時擊球
+        if (isMoving || !cueBall || cueBall.inPocket || gameOver) return; 
+
+        isMouseDown = true;
+        
+        // 從母球到滑鼠的向量 (即擊球方向的相反方向)
+        const dx = cueBall.x - mouseX;
+        const dy = cueBall.y - mouseY;
+        const distance = Math.hypot(dx, dy);
+
+        if (distance > BALL_RADIUS) { // 確保滑鼠不在球體內
+            // 計算擊球強度和方向
+            const power = parseFloat(powerSlider.value);
+            const speed = power * 15; // 調整一個合適的速度倍數
+            
+            // 擊球方向 (單位向量)
+            const ux = dx / distance;
+            const uy = dy / distance;
+
+            // 施加衝擊力
+            cueBall.vx = ux * speed;
+            cueBall.vy = uy * speed;
+
+            isMoving = true;
+            isAiming = false;
+        }
+        isMouseDown = false;
+    });
+
+    // 力度滑桿更新顯示
+    powerSlider.addEventListener('input', () => {
+        powerValueSpan.textContent = powerSlider.value;
+    });
+
+    // 重新開始按鈕事件
+    restartButton.addEventListener('click', restartGame);
+
+    // --- 啟動遊戲 ---
+    initializeGame();
+    gameLoop();
+</script>
+
+</body>
+</html>
